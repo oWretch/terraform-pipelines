@@ -1,0 +1,45 @@
+trigger:
+  - main
+pool:
+  vmImage: ubuntu-latest
+variables:
+  - name: tfstate.ResourceGroup
+    value: tf-state-rg
+  - name: tfstate.StorageAccount
+    value: statestorage
+  - name: NotificationEmails
+    value: '["notification@example.com", "approvers@example.com"]'
+stages:
+  - stage: Development
+    jobs:
+      - template: terraform-deployment.yml
+        parameters:
+          serviceConnection: Development DevOps Service Connection
+          tfStateConnection: State DevOps Service Connection
+          tfStateContainer: container
+          tfStateKey: Development/terraform.tfstate
+          variables:
+            environment: Development
+            network_cidr: 10.20.0.0/16
+  - stage: Testing
+    jobs:
+      - template: terraform-deployment.yml
+        parameters:
+          serviceConnection: Testing DevOps Service Connection
+          tfStateConnection: State DevOps Service Connection
+          tfStateContainer: container
+          tfStateKey: Testing/terraform.tfstate
+          variables:
+            environment: Testing
+            network_cidr: 10.10.0.0/16
+  - stage: Production
+    jobs:
+      - template: terraform-deployment.yml
+        parameters:
+          serviceConnection: Production DevOps Service Connection
+          tfStateConnection: State DevOps Service Connection
+          tfStateContainer: container
+          tfStateKey: Production/terraform.tfstate
+          variables:
+            environment: Production
+            network_cidr: 10.0.0.0/16

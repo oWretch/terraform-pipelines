@@ -1,0 +1,137 @@
+parameters:
+  - name: serviceConnection
+    type: string
+  - name: tfStateConnection
+    type: string
+  - name: tfStateContainer
+    type: string
+  - name: tfStateKey
+    type: string
+  - name: repository
+    type: string
+    default: self
+  - name: variables
+    type: object
+    default: {}
+jobs:
+  - job: GeneratePlan
+    displayName: Generate Plan File
+    continueOnError: false
+    steps:
+      - checkout: ${{ parameters.repository }}
+        fetchDepth: 1
+      - task: TerraformTaskV2@2
+        displayName: Initialize State
+        env:
+          TF_IN_AUTOMATION: true
+        inputs:
+          provider: azurerm
+          command: init
+          commandOptions: -input=false
+          backendServiceArm: ${{ parameters.tfStateConnection }}
+          backendAzureRmResourceGroupName: $(tfstate.ResourceGroup)
+          backendAzureRmStorageAccountName: $(tfstate.StorageAccount)
+          backendAzureRmContainerName: ${{ parameters.tfStateContainer }}
+          backendAzureRmKey: ${{ parameters.tfStateKey }}
+      - ${{ if eq(variables['Build.Reason'], 'PullRequest') }}:
+          - pwsh: |
+              & terraform fmt -check -diff
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host '##vso[task.logissue type=error;]Terraform formatting is not consistent. Please run `terraform fmt` and re-commit the changes.'
+                Write-Host '##vso[task.complete result=Failed;]Formatting failed'
+              }
+              exit 0
+            name: CheckFormat
+            displayName: Check Terraform Formatting
+          - task: TerraformTaskV2@2
+            name: Validate
+            displayName: Validate Terraform Code
+            env:
+              TF_IN_AUTOMATION: true
+            inputs:
+              provider: azurerm
+              command: validate
+              environmentServiceNameAzureRM: ${{ parameters.serviceConnection }}
+      - pwsh: |
+          $variables = '${{ convertToJson(parameters.variables) }}' | ConvertFrom-Json
+          $commandOptions = New-Object -TypeName 'System.Collections.ArrayList'
+          foreach ($p in $variables.psobject.properties) {
+            $commandOptions.Add("-var `"$($p.Name)=$($p.Value)`"") | Out-Null
+          }
+          Write-Host "##vso[task.SetVariable variable=CommandOptions;]$($commandOptions -join ' ')"
+        name: ConfigureVariables
+        displayName: Configure Terraform Variables
+      - task: TerraformTaskV2@2
+        name: GeneratePlan
+        displayName: Generate Plan
+        env:
+          TF_IN_AUTOMATION: true
+        inputs:
+          provider: azurerm
+          command: plan
+          commandOptions: $(CommandOptions) -input=false
+          environmentServiceNameAzureRM: ${{ parameters.serviceConnection }}
+      - ${{ if ne(variables['Build.Reason'], 'PullRequest') }}:
+          - task: ArchiveFiles@2
+            displayName: Create Plan Artifact
+            condition: variables['GeneratePlan.changesPresent']
+            inputs:
+              rootFolderOrFile: $(Build.SourcesDirectory)
+              includeRootFolder: false
+              archiveType: tar
+              tarCompression: gz
+              archiveFile: $(Build.ArtifactStagingDirectory)/$(System.StageName).tgz
+              replaceExistingArchive: true
+          - publish: $(Build.ArtifactStagingDirectory)/$(System.StageName).tgz
+            displayName: Publish Plan Artifact
+            artifact: tfplan-$(System.StageName)
+  - ${{ if ne(variables['Build.Reason'], 'PullRequest') }}:
+      - job: WaitForValidation
+        displayName: Wait for approval of plan
+        dependsOn: GeneratePlan
+        condition: dependencies.GeneratePlan.outputs['GeneratePlan.changesPresent']
+        pool: server
+        timeoutInMinutes: 1440
+        steps:
+          - task: ManualValidation@0
+            timeoutInMinutes: 1440
+            inputs:
+              notifyUsers: $(NotificationEmails)
+              instructions: Please validate the deployment plan and resume the build.
+      - deployment: Apply
+        displayName: Apply Plan
+        dependsOn: WaitForValidation
+        continueOnError: false
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: none
+                - task: ExtractFiles@1
+                  displayName: Extract Plan Artifact
+                  inputs:
+                    archiveFilePatterns: $(Pipeline.Workspace)/tfplan-$(System.StageName)/$(System.StageName).tgz
+                    destinationFolder: $(System.DefaultWorkingDirectory)/
+                    cleanDestinationFolder: false
+                - task: TerraformTaskV2@2
+                  displayName: Initialize State
+                  env:
+                    TF_IN_AUTOMATION: true
+                  inputs:
+                    provider: azurerm
+                    command: init
+                    commandOptions: -input=false
+                    backendServiceArm: ${{ parameters.tfStateConnection }}
+                    backendAzureRmResourceGroupName: $(tfstate.ResourceGroup)
+                    backendAzureRmStorageAccountName: $(tfstate.StorageAccount)
+                    backendAzureRmContainerName: ${{ parameters.tfStateContainer }}
+                    backendAzureRmKey: ${{ parameters.tfStateKey }}
+                - task: TerraformTaskV2@2
+                  displayName: Deploy Plan
+                  env:
+                    TF_IN_AUTOMATION: true
+                  inputs:
+                    provider: azurerm
+                    command: apply
+                    commandOptions: $(CommandOptions) -input=false
+                    environmentServiceNameAzureRM: ${{ parameters.serviceConnection }}
