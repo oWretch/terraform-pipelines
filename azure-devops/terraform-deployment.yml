@@ -74,7 +74,7 @@ jobs:
       - ${{ if ne(variables['Build.Reason'], 'PullRequest') }}:
           - task: ArchiveFiles@2
             displayName: Create Plan Artifact
-            condition: variables['GeneratePlan.changesPresent']
+            condition: eq(variables['GeneratePlan.changesPresent'], 'true')
             inputs:
               rootFolderOrFile: $(Build.SourcesDirectory)
               includeRootFolder: false
@@ -84,12 +84,17 @@ jobs:
               replaceExistingArchive: true
           - publish: $(Build.ArtifactStagingDirectory)/$(System.StageName).tgz
             displayName: Publish Plan Artifact
+            condition: eq(variables['GeneratePlan.changesPresent'], 'true')
             artifact: tfplan-$(System.StageName)
   - ${{ if ne(variables['Build.Reason'], 'PullRequest') }}:
       - job: WaitForValidation
         displayName: Wait for approval of plan
         dependsOn: GeneratePlan
-        condition: dependencies.GeneratePlan.outputs['GeneratePlan.changesPresent']
+        condition: >
+          and(
+            succeeded(),
+            eq(dependencies.GeneratePlan.outputs['GeneratePlan.changesPresent'], 'true')
+          )
         pool: server
         timeoutInMinutes: 1440
         steps:
